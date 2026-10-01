@@ -3,9 +3,10 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "
 import { Ionicons } from "@expo/vector-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Screen from "../components/Screen";
-import { Button, ErrorText } from "../components/UI";
+import { ErrorText } from "../components/UI";
+import SwipeAction from "../components/SwipeAction";
 import { api } from "../api/client";
-import { useAuth } from "../../App";
+import { useAuth } from "../state/AuthContext";
 import { colors } from "../theme";
 
 export default function BookingsScreen() {
@@ -67,7 +68,14 @@ export default function BookingsScreen() {
                 <Text style={styles.amount}>₹{Number(item.totalAmount).toFixed(2)}</Text>
               </View>
               {upcoming ? (
-                <Button title="Cancel reservation" secondary onPress={() => cancel.mutate(item.id)} loading={cancel.isPending} />
+                <SwipeAction
+                  label="Swipe left to cancel"
+                  completeLabel="Cancelling reservation"
+                  direction="left"
+                  destructive
+                  onComplete={() => cancel.mutateAsync(item.id).catch(() => {})}
+                  loading={cancel.isPending}
+                />
               ) : null}
             </View>
           );

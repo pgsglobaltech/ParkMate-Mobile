@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { NavigationContainer } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
@@ -10,21 +10,24 @@ import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
 import AuthScreen from "./src/screens/AuthScreen";
 import ExploreScreen from "./src/screens/ExploreScreen";
+import ServicesScreen from "./src/screens/ServicesScreen";
 import SlotsScreen from "./src/screens/SlotsScreen";
 import BookingsScreen from "./src/screens/BookingsScreen";
+import AccountScreen from "./src/screens/AccountScreen";
+import AccountDetailsScreen from "./src/screens/AccountDetailsScreen";
 import { colors } from "./src/theme";
+import { AuthContext, useAuth } from "./src/state/AuthContext";
 
-const AuthContext = createContext(null);
-export const useAuth = () => useContext(AuthContext);
 const Tabs = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
+const AccountStack = createNativeStackNavigator();
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } }
 });
 
 function MainTabs() {
   return (
-    <Tabs.Navigator screenOptions={{
+    <Tabs.Navigator initialRouteName="Home" screenOptions={{
       headerShown: false,
       tabBarActiveTintColor: colors.ink,
       tabBarInactiveTintColor: colors.muted,
@@ -37,13 +40,28 @@ function MainTabs() {
       },
       tabBarLabelStyle: { fontWeight: "700", fontSize: 11 }
     }}>
-      <Tabs.Screen name="Explore" component={ExploreScreen} options={{
+      <Tabs.Screen name="Home" component={ExploreScreen} options={{
         tabBarIcon: ({ color, size, focused }) => <Ionicons name={focused ? "home" : "home-outline"} color={color} size={size} />
       }} />
-      <Tabs.Screen name="My bookings" component={BookingsScreen} options={{
+      <Tabs.Screen name="Services" component={ServicesScreen} options={{
+        tabBarIcon: ({ color, size, focused }) => <Ionicons name={focused ? "grid" : "grid-outline"} color={color} size={size} />
+      }} />
+      <Tabs.Screen name="Activity" component={BookingsScreen} options={{
         tabBarIcon: ({ color, size, focused }) => <Ionicons name={focused ? "receipt" : "receipt-outline"} color={color} size={size} />
       }} />
+      <Tabs.Screen name="Account" component={AccountNavigator} options={{
+        tabBarIcon: ({ color, size, focused }) => <Ionicons name={focused ? "person" : "person-outline"} color={color} size={size} />
+      }} />
     </Tabs.Navigator>
+  );
+}
+
+function AccountNavigator() {
+  return (
+    <AccountStack.Navigator screenOptions={{ headerShown: false }}>
+      <AccountStack.Screen name="Account overview" component={AccountScreen} />
+      <AccountStack.Screen name="Account details" component={AccountDetailsScreen} />
+    </AccountStack.Navigator>
   );
 }
 
@@ -69,23 +87,44 @@ function AppNavigation() {
 
 export default function App() {
   const [token, setToken] = useState(null);
+  const [user, setUser] = useState(null);
   const [ready, setReady] = useState(false);
   React.useEffect(() => {
-    SecureStore.getItemAsync("parkmate.token").then(setToken).finally(() => setReady(true));
+    Promise.all([
+      SecureStore.getItemAsync("parkmate.token"),
+      SecureStore.getItemAsync("parkmate.fullName"),
+      SecureStore.getItemAsync("parkmate.email")
+    ])
+      .then(([savedToken, fullName, email]) => {
+        setToken(savedToken);
+        if (fullName || email) setUser({ fullName, email });
+      })
+      .finally(() => setReady(true));
   }, []);
   const auth = useMemo(() => ({
     token,
+    user,
     ready,
-    async signIn(value) {
-      await SecureStore.setItemAsync("parkmate.token", value);
+    async signIn(value, profile = {}) {
+      await Promise.all([
+        SecureStore.setItemAsync("parkmate.token", value),
+        SecureStore.setItemAsync("parkmate.fullName", profile.fullName || ""),
+        SecureStore.setItemAsync("parkmate.email", profile.email || "")
+      ]);
+      setUser({ fullName: profile.fullName || "", email: profile.email || "" });
       setToken(value);
     },
     async signOut() {
-      await SecureStore.deleteItemAsync("parkmate.token");
+      await Promise.all([
+        SecureStore.deleteItemAsync("parkmate.token"),
+        SecureStore.deleteItemAsync("parkmate.fullName"),
+        SecureStore.deleteItemAsync("parkmate.email")
+      ]);
       queryClient.clear();
+      setUser(null);
       setToken(null);
     }
-  }), [token, ready]);
+  }), [token, user, ready]);
 
   return (
     <QueryClientProvider client={queryClient}>

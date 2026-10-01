@@ -2,16 +2,20 @@ import React, { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useStripe } from "@stripe/stripe-react-native";
 import Screen from "../components/Screen";
-import { Button, Card, ErrorText, Heading } from "../components/UI";
+import { Card, ErrorText, Heading } from "../components/UI";
+import SwipeAction from "../components/SwipeAction";
 import { api } from "../api/client";
-import { useAuth } from "../../App";
+import { useAuth } from "../state/AuthContext";
 import { colors } from "../theme";
+import * as Haptics from "expo-haptics";
 
 export default function SlotsScreen({ route, navigation }) {
   const { location } = route.params;
+  const vehicleType = route.params?.vehicleType || "";
+  const vehicleLabel = vehicleType === "RICKSHAW" ? "Rickshaw" : vehicleType === "BIKE" ? "Bike" : "Car";
   const { token } = useAuth();
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
   const queryClient = useQueryClient();
@@ -27,10 +31,17 @@ export default function SlotsScreen({ route, navigation }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const availability = useQuery({
-    queryKey: ["availability", location.id, start.toISOString(), end.toISOString()],
-    queryFn: () => api(`/locations/${location.id}/availability?start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}`, { token }),
+    queryKey: ["availability", location.id, vehicleType, start.toISOString(), end.toISOString()],
+    queryFn: () => api(`/locations/${location.id}/availability?start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}${vehicleType ? `&vehicleType=${vehicleType}` : ""}`, { token }),
     enabled: end > start
   });
+  const durationHours = Math.max(0, (end.getTime() - start.getTime()) / (60 * 60 * 1000));
+  const estimatedTotal = Number(location.hourlyRate) * durationHours;
+
+  async function selectSlot(slot) {
+    await Haptics.selectionAsync();
+    setSelected(slot);
+  }
 
   async function reserve() {
     if (!selected) return;
@@ -59,7 +70,7 @@ export default function SlotsScreen({ route, navigation }) {
       if (result.error) throw new Error(result.error.message);
       await queryClient.invalidateQueries({ queryKey: ["availability"] });
       await queryClient.invalidateQueries({ queryKey: ["bookings"] });
-      navigation.navigate("ParkMate", { screen: "My bookings" });
+      navigation.navigate("ParkMate", { screen: "Activity" });
     } catch (err) {
       if (bookingId) {
         try {
@@ -80,7 +91,7 @@ export default function SlotsScreen({ route, navigation }) {
     <Screen>
       <Heading subtitle={`${location.address}, ${location.city}`}>{location.name}</Heading>
       <Card>
-        <Text style={styles.label}>Choose your parking time</Text>
+        <Text style={styles.label}>Choose your {vehicleLabel.toLowerCase()} parking time</Text>
         <View style={styles.timeRow}>
           <TimeButton title="Arrival" value={start} onPress={() => setPicker("start")} />
           <TimeButton title="Departure" value={end} onPress={() => setPicker("end")} />
@@ -103,8 +114,11 @@ export default function SlotsScreen({ route, navigation }) {
         />
       ) : null}
       <View style={styles.slotsHeader}>
-        <Text style={styles.label}>Available spaces</Text>
-        {availability.isFetching ? <ActivityIndicator color={colors.primary} /> : null}
+        <Text style={styles.label}>Available {vehicleLabel.toLowerCase()} spaces</Text>
+        <View style={styles.refreshStatus}>
+          {availability.isFetching ? <ActivityIndicator color={colors.primary} size="small" /> : null}
+          <Text style={styles.slotCount}>{availability.data?.length ?? 0} spots</Text>
+        </View>
       </View>
       <ErrorText>{end <= start ? "Departure must be after arrival." : availability.error?.message}</ErrorText>
       <FlatList
@@ -114,7 +128,13 @@ export default function SlotsScreen({ route, navigation }) {
         scrollEnabled={false}
         columnWrapperStyle={styles.gridRow}
         renderItem={({ item }) => (
-          <Pressable onPress={() => setSelected(item)} style={[styles.slot, selected?.id === item.id && styles.selectedSlot]}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: selected?.id === item.id }}
+            accessibilityLabel={`${item.label}, available parking space`}
+            onPress={() => selectSlot(item)}
+            style={[styles.slot, selected?.id === item.id && styles.selectedSlot]}
+          >
             <Ionicons name="car-outline" size={16} color={selected?.id === item.id ? "#101010" : colors.muted} />
             <Text style={[styles.slotLabel, selected?.id === item.id && styles.selectedLabel]}>{item.label}</Text>
             <Text style={[styles.slotSub, selected?.id === item.id && styles.selectedLabel]}>Available</Text>
@@ -123,10 +143,25 @@ export default function SlotsScreen({ route, navigation }) {
       />
       {!availability.isLoading && !availability.error && availability.data?.length === 0
         ? <Text style={styles.empty}>No spaces available for this time. Try another window.</Text> : null}
+      {selected && (
+        <View style={styles.summary}>
+          <View style={styles.summaryIcon}><Ionicons name="car-sport" size={20} color={colors.primary} /></View>
+          <View style={styles.summaryInfo}>
+            <Text style={styles.summaryTitle}>{selected.label} · {vehicleLabel} · {location.name}</Text>
+            <Text style={styles.summarySubtitle}>{durationHours.toFixed(1)} hour session · {start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} – {end.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Text>
+          </View>
+          <Text style={styles.summaryPrice}>₹{estimatedTotal.toFixed(2)}</Text>
+        </View>
+      )}
       <ErrorText>{error}</ErrorText>
-      <Button title={selected ? `Book ${selected.label} · Pay securely` : "Select a parking slot"}
-        onPress={reserve} disabled={!selected || !availability.data?.some(slot => slot.id === selected?.id)} loading={busy} />
-      <Text style={styles.disclaimer}><Ionicons name="lock-closed" size={11} color={colors.muted} /> Secure payment · Your space is held when your booking is confirmed</Text>
+      <SwipeAction
+        label={selected ? "Swipe to book and pay" : "Choose a parking spot first"}
+        completeLabel="Opening secure checkout"
+        onComplete={reserve}
+        disabled={!selected || !availability.data?.some(slot => slot.id === selected?.id)}
+        loading={busy}
+      />
+      <Text style={styles.disclaimer}><Ionicons name="lock-closed" size={11} color={colors.muted} /> Swipe to confirm · Secure payment</Text>
     </Screen>
   );
 }
@@ -149,12 +184,20 @@ const styles = StyleSheet.create({
   rateRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   rate: { color: colors.primary, fontWeight: "800" },
   slotsHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  refreshStatus: { flexDirection: "row", alignItems: "center", gap: 6 },
+  slotCount: { color: colors.muted, fontSize: 11, fontWeight: "700" },
   gridRow: { gap: 10, marginBottom: 10 },
   slot: { flex: 1, height: 82, borderRadius: 14, borderColor: colors.border, borderWidth: 1, backgroundColor: "#191919", justifyContent: "center", alignItems: "center", gap: 3 },
   selectedSlot: { backgroundColor: colors.primary, borderColor: colors.primary },
   slotLabel: { fontSize: 15, color: colors.ink, fontWeight: "900" },
   slotSub: { fontSize: 11, color: colors.muted },
   selectedLabel: { color: "#101010" },
+  summary: { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 15, padding: 12, backgroundColor: "#191919", borderWidth: 1, borderColor: "#303030" },
+  summaryIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: "#29321e", alignItems: "center", justifyContent: "center" },
+  summaryInfo: { flex: 1, gap: 4 },
+  summaryTitle: { color: colors.ink, fontSize: 12, fontWeight: "800" },
+  summarySubtitle: { color: colors.muted, fontSize: 10 },
+  summaryPrice: { color: colors.ink, fontSize: 16, fontWeight: "900" },
   empty: { textAlign: "center", color: colors.muted, padding: 18, backgroundColor: "#191919", borderRadius: 14, overflow: "hidden" },
   disclaimer: { color: colors.muted, textAlign: "center", fontSize: 11, lineHeight: 17 }
 });

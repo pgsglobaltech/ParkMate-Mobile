@@ -3,7 +3,7 @@ import { Text, View, StyleSheet } from "react-native";
 import Screen from "../components/Screen";
 import { Button, ErrorText, Field, Heading } from "../components/UI";
 import { api } from "../api/client";
-import { useAuth } from "../../App";
+import { useAuth } from "../state/AuthContext";
 import { colors } from "../theme";
 
 export default function AuthScreen() {
@@ -23,7 +23,7 @@ export default function AuthScreen() {
         method: "POST",
         body: { ...(register ? { fullName: fullName.trim() } : {}), email: email.trim(), password }
       });
-      await signIn(result.token);
+      await signIn(result.token, { fullName: result.fullName, email: result.email });
     } catch (err) {
       setError(err.message);
     } finally {

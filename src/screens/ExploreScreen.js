@@ -1,235 +1,397 @@
-import React, { useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import MapView, { Callout, Marker, PROVIDER_GOOGLE } from "react-native-maps";
+import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
 import { useQuery } from "@tanstack/react-query";
-import Screen from "../components/Screen";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import * as Haptics from "expo-haptics";
+import DraggableSheet from "../components/DraggableSheet";
 import { ErrorText, Field } from "../components/UI";
 import { api } from "../api/client";
-import { useAuth } from "../../App";
+import { useAuth } from "../state/AuthContext";
 import { colors } from "../theme";
 
-const QUICK_CITIES = ["Delhi", "Gurugram", "Noida", "Faridabad"];
+const QUICK_CITIES = ["All areas", "Delhi", "Gurugram", "Noida", "Faridabad"];
+const NCR_REGION = {
+  latitude: 28.6139,
+  longitude: 77.209,
+  latitudeDelta: 0.29,
+  longitudeDelta: 0.29
+};
+const DARK_MAP_STYLE = [
+  { elementType: "geometry", stylers: [{ color: "#202124" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#b9bdc5" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#202124" }] },
+  { featureType: "administrative", elementType: "geometry.stroke", stylers: [{ color: "#42464d" }] },
+  { featureType: "poi", elementType: "geometry", stylers: [{ color: "#282a2e" }] },
+  { featureType: "poi", elementType: "labels.text.fill", stylers: [{ color: "#9298a1" }] },
+  { featureType: "road", elementType: "geometry", stylers: [{ color: "#373a40" }] },
+  { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#25272b" }] },
+  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#aeb4bd" }] },
+  { featureType: "transit", elementType: "geometry", stylers: [{ color: "#303239" }] },
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#111820" }] },
+  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#738091" }] }
+];
 
-export default function ExploreScreen({ navigation }) {
+export default function ExploreScreen({ navigation, route }) {
   const { token } = useAuth();
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const mapRef = useRef(null);
+  const carouselRef = useRef(null);
+  const selectedIndex = useRef(0);
   const [city, setCity] = useState("");
+  const [vehicleType, setVehicleType] = useState(route.params?.vehicleType || "");
+  const [selectedId, setSelectedId] = useState(null);
   const [datePicker, setDatePicker] = useState(false);
-  const [mapVisible, setMapVisible] = useState(false);
   const [start, setStart] = useState(new Date(Date.now() + 60 * 60 * 1000));
-  const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+  const [sheetExpanded, setSheetExpanded] = useState(false);
   const locations = useQuery({
-    queryKey: ["locations", city],
-    queryFn: () => api(`/locations${city.trim() ? `?city=${encodeURIComponent(city.trim())}` : ""}`, { token })
+    queryKey: ["locations", city, vehicleType],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (city.trim()) params.set("city", city.trim());
+      if (vehicleType) params.set("vehicleType", vehicleType);
+      const query = params.toString();
+      return api(`/locations${query ? `?${query}` : ""}`, { token });
+    }
   });
 
-  function choose(location) {
-    navigation.navigate("Choose a slot", { location, start: start.toISOString(), end: end.toISOString() });
+  const results = locations.data || [];
+  const activeLocation = results.find(item => item.id === selectedId) || results[0] || null;
+  const cardWidth = Math.max(260, windowWidth - 68);
+  const sheetHeight = Math.min(windowHeight * 0.78, windowHeight - insets.top - 78);
+  const collapsedHeight = Math.min(windowHeight * 0.39, sheetHeight - 90);
+  const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+
+  useEffect(() => {
+    if (route.params?.vehicleType && route.params.vehicleType !== vehicleType) {
+      setVehicleType(route.params.vehicleType);
+      setSelectedId(null);
+      selectedIndex.current = 0;
+    }
+  }, [route.params?.vehicleType]);
+
+  useEffect(() => {
+    if (results.length === 1 && results[0].id !== selectedId) setSelectedId(results[0].id);
+    if (selectedId && !results.some(item => item.id === selectedId)) setSelectedId(null);
+    if (results.length > 1) {
+      const coordinates = results.map(item => ({ latitude: item.latitude, longitude: item.longitude }));
+      mapRef.current?.fitToCoordinates(coordinates, {
+        edgePadding: { top: 170, right: 45, bottom: 330, left: 45 },
+        animated: true
+      });
+    }
+  }, [results, city, vehicleType]);
+
+  const vehicleLabel = vehicleType === "RICKSHAW"
+    ? "Rickshaw"
+    : vehicleType === "BIKE" ? "Bike" : vehicleType === "CAR" ? "Car" : "";
+  function chooseLocation(location) {
+    setSelectedId(location.id);
+    mapRef.current?.animateToRegion({
+      latitude: location.latitude,
+      longitude: location.longitude,
+      latitudeDelta: 0.028,
+      longitudeDelta: 0.028
+    }, 420);
   }
 
-  function setWhen(value) {
+  function openSlots(location) {
+    if (!location) return;
+    navigation.navigate("Choose a slot", {
+      location,
+      vehicleType,
+      start: start.toISOString(),
+      end: end.toISOString()
+    });
+  }
+
+  function handleCarouselScroll(event) {
+    const index = Math.round(event.nativeEvent.contentOffset.x / (cardWidth + 12));
+    if (index >= 0 && index < results.length && index !== selectedIndex.current) {
+      selectedIndex.current = index;
+      chooseLocation(results[index]);
+    }
+  }
+
+  function setArrival(value) {
     if (value) setStart(value);
     setDatePicker(false);
   }
 
+  async function setCityFilter(value) {
+    await Haptics.selectionAsync();
+    const nextCity = value === "All areas" ? "" : value;
+    selectedIndex.current = 0;
+    setSelectedId(null);
+    setCity(nextCity);
+  }
+
   return (
-    <Screen style={styles.page}>
-      <View style={styles.topBar}>
-        <View style={styles.area}>
-          <View style={styles.areaPin}><Ionicons name="location" size={16} color="#101010" /></View>
-          <View>
-            <Text style={styles.eyebrow}>PARKING AROUND</Text>
-            <Text style={styles.areaTitle}>Delhi NCR <Ionicons name="chevron-down" size={14} color={colors.ink} /></Text>
+    <View style={styles.root}>
+      <MapView
+        ref={mapRef}
+        provider={PROVIDER_GOOGLE}
+        style={StyleSheet.absoluteFill}
+        customMapStyle={DARK_MAP_STYLE}
+        initialRegion={NCR_REGION}
+        showsCompass={false}
+        showsIndoors
+        toolbarEnabled={false}
+      >
+        {results.map(location => {
+          const selected = activeLocation?.id === location.id;
+          return (
+            <Marker
+              key={location.id}
+              coordinate={{ latitude: location.latitude, longitude: location.longitude }}
+              onPress={() => {
+                chooseLocation(location);
+                setSheetExpanded(true);
+                Haptics.selectionAsync();
+              }}
+              tracksViewChanges={false}
+              zIndex={selected ? 2 : 1}
+            >
+              <View style={[styles.priceMarker, selected && styles.priceMarkerSelected]}>
+                <Text style={[styles.markerPrice, selected && styles.markerPriceSelected]}>
+                  ₹{Number(location.hourlyRate).toLocaleString("en-IN")}
+                </Text>
+              </View>
+            </Marker>
+          );
+        })}
+      </MapView>
+
+      <SafeAreaView pointerEvents="box-none" style={styles.safeOverlay}>
+        <View style={styles.header}>
+          <View style={styles.brand}>
+            <View style={styles.brandIcon}><Ionicons name="car-sport" size={19} color="#101010" /></View>
+            <View>
+              <Text style={styles.brandName}>ParkMate</Text>
+              <Text style={styles.brandSub}>{vehicleLabel ? `${vehicleLabel.toUpperCase()} PARKING · NCR` : "PARKING AROUND NCR"}</Text>
+            </View>
           </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Open activity"
+            onPress={() => navigation.navigate("Activity")}
+            style={styles.headerAction}
+          >
+            <Ionicons name="receipt-outline" size={19} color={colors.ink} />
+          </Pressable>
         </View>
-        <Pressable style={styles.inboxButton} onPress={() => navigation.navigate("My bookings")}>
-          <Ionicons name="receipt-outline" size={18} color={colors.ink} />
-          <Text style={styles.inboxText}>Bookings</Text>
-        </Pressable>
-      </View>
 
-      <View style={styles.modeTabs}>
-        <View style={styles.modeActive}><Ionicons name="car-sport" color={colors.ink} size={18} /><Text style={styles.modeActiveText}>Parking</Text></View>
-        <Pressable onPress={() => navigation.navigate("My bookings")} style={styles.modeInactive}>
-          <Ionicons name="bookmark-outline" color={colors.muted} size={18} /><Text style={styles.modeText}>Reservations</Text>
-        </Pressable>
-      </View>
-      <View style={styles.modeUnderline} />
-
-      <View style={styles.searchCard}>
-        <View style={styles.searchInputRow}>
-          <Ionicons name="search" size={21} color={colors.ink} />
+        <View style={styles.searchCard}>
+          <Ionicons name="search" size={20} color={colors.ink} />
           <Field
             value={city}
             onChangeText={setCity}
-            placeholder="Where do you want to park?"
+            placeholder={vehicleLabel ? `Find ${vehicleLabel.toLowerCase()} parking` : "Where do you want to park?"}
             accessibilityLabel="Search parking by city"
             returnKeyType="search"
             autoCorrect={false}
             style={styles.cityField}
           />
           {city.length > 0 && (
-            <Pressable onPress={() => setCity("")} hitSlop={12}>
+            <Pressable onPress={() => setCityFilter("All areas")} hitSlop={10}>
               <Ionicons name="close-circle" size={19} color={colors.muted} />
             </Pressable>
           )}
-        </View>
-        <View style={styles.searchDivider} />
-        <Pressable style={styles.whenButton} onPress={() => setDatePicker(true)}>
-          <View style={styles.whenIcon}><Ionicons name="time-outline" color={colors.ink} size={18} /></View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.whenLabel}>ARRIVAL</Text>
-            <Text style={styles.whenValue}>{start.toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={17} color={colors.muted} />
-        </Pressable>
-        {datePicker && (
-          <DateTimePicker
-            value={start}
-            mode="datetime"
-            minimumDate={new Date()}
-            onChange={(_, value) => setWhen(value)}
-          />
-        )}
-      </View>
-
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Explore by area</Text>
-        {city ? (
-          <Pressable onPress={() => setCity("")}><Text style={styles.clearText}>Clear</Text></Pressable>
-        ) : null}
-      </View>
-      <View style={styles.cityRow}>
-        {QUICK_CITIES.map((item, index) => (
-          <Pressable key={item} onPress={() => setCity(city === item ? "" : item)}
-            style={[styles.cityChip, city === item && styles.cityChipSelected]}>
-            <View style={[styles.cityGlyph, city === item && styles.cityGlyphSelected]}>
-              <Ionicons name={["business-outline", "briefcase-outline", "leaf-outline", "sunny-outline"][index]}
-                color={city === item ? "#101010" : colors.ink} size={18} />
+          <View style={styles.searchDivider} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Change arrival time, currently ${start.toLocaleString()}`}
+            onPress={() => setDatePicker(true)}
+            style={styles.arrivalButton}
+          >
+            <Ionicons name="time-outline" size={18} color={colors.ink} />
+            <View>
+              <Text style={styles.arrivalLabel}>ARRIVE</Text>
+              <Text style={styles.arrivalValue}>{start.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}</Text>
             </View>
-            <Text style={[styles.cityName, city === item && styles.cityNameSelected]}>{item}</Text>
           </Pressable>
-        ))}
-      </View>
+        </View>
+        {datePicker && (
+          <DateTimePicker value={start} mode="datetime" minimumDate={new Date()} onChange={(_, value) => setArrival(value)} />
+        )}
+      </SafeAreaView>
 
-      <View style={styles.sectionHeader}>
-        <View>
-          <Text style={styles.sectionTitle}>{city ? `Parking in ${city}` : "Parking spots for you"}</Text>
-          <Text style={styles.sectionCaption}>
-            {locations.data ? `${locations.data.length} ${locations.data.length === 1 ? "location" : "locations"}` : "Live locations"}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Show all Delhi NCR parking locations on the map"
+        onPress={() => {
+          setCityFilter("All areas");
+          mapRef.current?.animateToRegion(NCR_REGION, 450);
+        }}
+        style={[styles.recenterButton, { top: insets.top + 160 }]}
+      >
+        <Ionicons name="scan-outline" size={21} color={colors.ink} />
+      </Pressable>
+
+      <DraggableSheet
+        height={sheetHeight}
+        collapsedHeight={collapsedHeight}
+        onExpandedChange={setSheetExpanded}
+      >
+        <View style={styles.sheetContent}>
+          <View style={styles.sheetHeading}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sheetTitle}>{city ? `Parking in ${city}` : "Find your parking"}</Text>
+              <Text style={styles.sheetSubtitle}>
+                {locations.isLoading
+                  ? "Searching locations…"
+                  : `${results.length} ${results.length === 1 ? "location" : "locations"} · 2 hour session`}
+              </Text>
+            </View>
+            {locations.isLoading ? <ActivityIndicator color={colors.primary} /> : (
+              <View style={styles.countPill}>
+                <View style={styles.liveDot} />
+                <Text style={styles.countText}>LIVE</Text>
+              </View>
+            )}
+          </View>
+
+          <FlatList
+            horizontal
+            data={QUICK_CITIES}
+            keyExtractor={item => item}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.cityFilters}
+            renderItem={({ item }) => {
+              const active = item === "All areas" ? !city : city === item;
+              return (
+                <Pressable
+                  onPress={() => setCityFilter(item)}
+                  style={[styles.filterChip, active && styles.filterChipActive]}
+                >
+                  <Text style={[styles.filterText, active && styles.filterTextActive]}>{item}</Text>
+                </Pressable>
+              );
+            }}
+          />
+
+          {locations.error ? <ErrorText>{locations.error.message}</ErrorText> : null}
+          {!locations.isLoading && !locations.error && results.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Ionicons name="car-outline" color={colors.ink} size={26} />
+              <Text style={styles.emptyTitle}>No {vehicleLabel ? `${vehicleLabel.toLowerCase()} ` : ""}parking found here</Text>
+              <Text style={styles.emptyText}>Try another area or choose All areas to browse Delhi NCR.</Text>
+              <Pressable onPress={() => setCityFilter("All areas")}><Text style={styles.emptyAction}>Browse all locations</Text></Pressable>
+            </View>
+          ) : null}
+
+          {results.length > 0 && (
+            <FlatList
+              ref={carouselRef}
+              horizontal
+              pagingEnabled={false}
+              snapToInterval={cardWidth + 12}
+              decelerationRate="fast"
+              disableIntervalMomentum
+              showsHorizontalScrollIndicator={false}
+              data={results}
+              keyExtractor={item => String(item.id)}
+              onMomentumScrollEnd={handleCarouselScroll}
+              contentContainerStyle={styles.carousel}
+              renderItem={({ item }) => (
+                <Pressable
+                  onPress={() => chooseLocation(item)}
+                  style={[styles.locationCard, { width: cardWidth }, activeLocation?.id === item.id && styles.locationCardActive]}
+                >
+                  <View style={styles.locationTop}>
+                    <View style={styles.parkingIcon}><Ionicons name="car-outline" size={23} color={colors.ink} /></View>
+                    <View style={styles.locationInfo}>
+                      <Text style={styles.locationName} numberOfLines={1}>{item.name}</Text>
+                      <Text style={styles.address} numberOfLines={1}>{item.address}, {item.city}</Text>
+                    </View>
+                    <View style={styles.priceBlock}>
+                      <Text style={styles.price}>₹{Number(item.hourlyRate).toLocaleString("en-IN")}</Text>
+                      <Text style={styles.perHour}>per hour</Text>
+                    </View>
+                  </View>
+                  <View style={styles.cardDivider} />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Choose a slot at ${item.name}`}
+                    onPress={() => openSlots(item)}
+                    style={styles.chooseButton}
+                  >
+                    <Text style={styles.chooseText}>View available spaces</Text>
+                    <Ionicons name="arrow-forward" size={17} color="#101010" />
+                  </Pressable>
+                </Pressable>
+              )}
+            />
+          )}
+          <Text style={styles.gestureHint}>
+            <Ionicons name="swap-horizontal-outline" size={13} color={colors.muted} /> Swipe cards to explore · {sheetExpanded ? "Drag down to see the map" : "Drag the handle to expand"}
           </Text>
         </View>
-        <Pressable style={styles.mapToggle} onPress={() => setMapVisible(!mapVisible)}>
-          <Ionicons name={mapVisible ? "list-outline" : "map-outline"} size={16} color={colors.ink} />
-          <Text style={styles.mapToggleText}>{mapVisible ? "List" : "Map"}</Text>
-        </Pressable>
-      </View>
-
-      {mapVisible && (
-        <MapView provider={PROVIDER_GOOGLE} style={styles.map} initialRegion={{
-          latitude: 28.6139, longitude: 77.209, latitudeDelta: 0.28, longitudeDelta: 0.28
-        }}>
-          {(locations.data || []).map(location => (
-            <Marker key={location.id} coordinate={{ latitude: location.latitude, longitude: location.longitude }}>
-              <Callout onPress={() => choose(location)}>
-                <View style={styles.callout}>
-                  <Text style={styles.locationName}>{location.name}</Text>
-                  <Text>₹{location.hourlyRate}/hour · Tap to view</Text>
-                </View>
-              </Callout>
-            </Marker>
-          ))}
-        </MapView>
-      )}
-
-      {locations.isLoading ? (
-        <View style={styles.loading}><ActivityIndicator color={colors.primary} /><Text style={styles.loadingText}>Finding parking nearby…</Text></View>
-      ) : null}
-      <ErrorText>{locations.error?.message}</ErrorText>
-
-      <FlatList
-        data={locations.data || []}
-        keyExtractor={item => String(item.id)}
-        scrollEnabled={false}
-        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-        renderItem={({ item }) => (
-          <Pressable onPress={() => choose(item)} style={styles.locationCard}>
-            <View style={styles.parkingIcon}><Ionicons name="car-outline" size={24} color={colors.ink} /></View>
-            <View style={styles.locationInfo}>
-              <Text style={styles.locationName} numberOfLines={1}>{item.name}</Text>
-              <Text style={styles.address} numberOfLines={1}>{item.address}, {item.city}</Text>
-              <View style={styles.rateTag}>
-                <Ionicons name="pricetag-outline" color={colors.primary} size={13} />
-                <Text style={styles.rateText}>₹{item.hourlyRate} <Text style={styles.rateUnit}>/ hour</Text></Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={19} color={colors.muted} />
-          </Pressable>
-        )}
-      />
-      {!locations.isLoading && !locations.error && locations.data?.length === 0 ? (
-        <View style={styles.emptyCard}>
-          <View style={styles.emptyIcon}><Ionicons name="car-outline" size={25} color={colors.ink} /></View>
-          <Text style={styles.emptyTitle}>No spots in this area yet</Text>
-          <Text style={styles.emptyText}>Try another Delhi NCR city, or check back as more parking locations are added.</Text>
-          <Pressable onPress={() => setCity("")}><Text style={styles.clearText}>Show all locations</Text></Pressable>
-        </View>
-      ) : null}
-    </Screen>
+      </DraggableSheet>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  page: { paddingTop: 8 },
-  topBar: { minHeight: 48, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  area: { flexDirection: "row", alignItems: "center", gap: 10 },
-  areaPin: { width: 31, height: 31, borderRadius: 16, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
-  eyebrow: { color: colors.muted, fontWeight: "700", fontSize: 9, letterSpacing: 1.2 },
-  areaTitle: { color: colors.ink, fontSize: 16, fontWeight: "800", marginTop: 2 },
-  inboxButton: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 8, paddingLeft: 10 },
-  inboxText: { color: colors.ink, fontWeight: "600", fontSize: 12 },
-  modeTabs: { flexDirection: "row", alignItems: "center", gap: 26, paddingTop: 8 },
-  modeActive: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 8 },
-  modeActiveText: { color: colors.ink, fontSize: 16, fontWeight: "800" },
-  modeInactive: { flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 8 },
-  modeText: { color: colors.muted, fontSize: 14, fontWeight: "600" },
-  modeUnderline: { width: 86, height: 3, borderRadius: 2, backgroundColor: colors.ink, marginTop: -17, marginBottom: 2 },
-  searchCard: { backgroundColor: "#202020", borderWidth: 1, borderColor: "#292929", borderRadius: 20, paddingHorizontal: 15, paddingVertical: 7 },
-  searchInputRow: { minHeight: 53, flexDirection: "row", alignItems: "center", gap: 11 },
-  cityField: { flex: 1, minHeight: 48, paddingHorizontal: 0, borderWidth: 0, backgroundColor: "transparent", fontSize: 15 },
-  searchDivider: { height: 1, backgroundColor: colors.border, marginLeft: 32 },
-  whenButton: { minHeight: 54, flexDirection: "row", alignItems: "center", gap: 10 },
-  whenIcon: { width: 30, height: 30, borderRadius: 9, backgroundColor: "#303030", alignItems: "center", justifyContent: "center" },
-  whenLabel: { color: colors.muted, fontSize: 9, fontWeight: "700", letterSpacing: 1 },
-  whenValue: { color: colors.ink, fontSize: 13, fontWeight: "600", marginTop: 2 },
-  sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 2 },
-  sectionTitle: { color: colors.ink, fontSize: 18, fontWeight: "800", letterSpacing: -0.2 },
-  sectionCaption: { color: colors.muted, fontSize: 12, marginTop: 3 },
-  clearText: { color: colors.primary, fontSize: 13, fontWeight: "700" },
-  cityRow: { flexDirection: "row", justifyContent: "space-between", gap: 7 },
-  cityChip: { flex: 1, alignItems: "center", gap: 7, paddingVertical: 9, borderRadius: 14, borderWidth: 1, borderColor: "transparent" },
-  cityChipSelected: { borderColor: colors.primary, backgroundColor: "#1b2113" },
-  cityGlyph: { width: 52, height: 52, borderRadius: 28, backgroundColor: "#202020", alignItems: "center", justifyContent: "center" },
-  cityGlyphSelected: { backgroundColor: colors.primary },
-  cityName: { color: colors.ink, fontSize: 11, fontWeight: "600" },
-  cityNameSelected: { color: colors.primary },
-  mapToggle: { flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 16, backgroundColor: "#202020", paddingHorizontal: 11, paddingVertical: 8 },
-  mapToggleText: { color: colors.ink, fontSize: 12, fontWeight: "700" },
-  map: { height: 220, borderRadius: 16 },
-  locationCard: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 17, backgroundColor: "#191919", borderWidth: 1, borderColor: "#292929", padding: 13 },
-  parkingIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: "#292929", alignItems: "center", justifyContent: "center" },
+  root: { flex: 1, backgroundColor: colors.background },
+  safeOverlay: { paddingHorizontal: 18, paddingTop: 4 },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
+  brand: { flexDirection: "row", alignItems: "center", gap: 10 },
+  brandIcon: { height: 38, width: 38, borderRadius: 13, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
+  brandName: { color: colors.ink, fontSize: 17, fontWeight: "900" },
+  brandSub: { color: colors.muted, fontSize: 8, letterSpacing: 1.1, marginTop: 2, fontWeight: "700" },
+  headerAction: { height: 40, width: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: "#202020", borderWidth: 1, borderColor: "#353535" },
+  searchCard: { flexDirection: "row", alignItems: "center", minHeight: 61, borderRadius: 18, paddingHorizontal: 15, backgroundColor: "#181818", borderWidth: 1, borderColor: "#333333", gap: 10 },
+  cityField: { flex: 1, minHeight: 48, paddingHorizontal: 0, borderWidth: 0, backgroundColor: "transparent", fontSize: 14 },
+  searchDivider: { height: 32, width: 1, backgroundColor: colors.border },
+  arrivalButton: { flexDirection: "row", alignItems: "center", gap: 7, paddingLeft: 1 },
+  arrivalLabel: { color: colors.muted, fontWeight: "800", fontSize: 8, letterSpacing: 0.8 },
+  arrivalValue: { color: colors.ink, fontSize: 11, fontWeight: "700", marginTop: 2 },
+  recenterButton: { position: "absolute", right: 18, height: 44, width: 44, borderRadius: 22, backgroundColor: "#181818", borderWidth: 1, borderColor: "#383838", alignItems: "center", justifyContent: "center" },
+  priceMarker: { borderRadius: 16, backgroundColor: "#202020", paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: "#383838", elevation: 4 },
+  priceMarkerSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
+  markerPrice: { color: colors.ink, fontSize: 12, fontWeight: "900" },
+  markerPriceSelected: { color: "#101010" },
+  sheetContent: { flex: 1, paddingBottom: 8 },
+  sheetHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingBottom: 13 },
+  sheetTitle: { color: colors.ink, fontSize: 20, fontWeight: "900", letterSpacing: -0.3 },
+  sheetSubtitle: { color: colors.muted, fontSize: 12, marginTop: 4 },
+  countPill: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 13, backgroundColor: "#20251a" },
+  liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.primary },
+  countText: { color: colors.primary, fontSize: 9, fontWeight: "900", letterSpacing: 0.7 },
+  cityFilters: { gap: 8, paddingHorizontal: 20, paddingBottom: 15 },
+  filterChip: { borderRadius: 16, paddingHorizontal: 13, paddingVertical: 8, borderWidth: 1, borderColor: "#343434", backgroundColor: "#191919" },
+  filterChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  filterText: { color: colors.muted, fontSize: 11, fontWeight: "700" },
+  filterTextActive: { color: "#101010" },
+  carousel: { paddingHorizontal: 20, gap: 12 },
+  locationCard: { borderRadius: 18, padding: 13, backgroundColor: "#1b1b1b", borderWidth: 1, borderColor: "#303030" },
+  locationCardActive: { borderColor: "#536e2c" },
+  locationTop: { flexDirection: "row", alignItems: "center", gap: 10 },
+  parkingIcon: { width: 43, height: 43, borderRadius: 13, backgroundColor: "#2b2b2b", alignItems: "center", justifyContent: "center" },
   locationInfo: { flex: 1, gap: 4 },
-  locationName: { color: colors.ink, fontWeight: "800", fontSize: 14 },
-  address: { color: colors.muted, fontSize: 11 },
-  rateTag: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
-  rateText: { color: colors.primary, fontWeight: "800", fontSize: 12 },
-  rateUnit: { color: colors.muted, fontWeight: "500" },
-  callout: { gap: 4, padding: 4, minWidth: 170 },
-  loading: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 18 },
-  loadingText: { color: colors.muted, fontSize: 13 },
-  emptyCard: { alignItems: "center", padding: 23, gap: 9, borderRadius: 18, backgroundColor: "#191919", borderWidth: 1, borderColor: "#292929" },
-  emptyIcon: { width: 52, height: 52, borderRadius: 26, backgroundColor: "#292929", alignItems: "center", justifyContent: "center", marginBottom: 3 },
-  emptyTitle: { color: colors.ink, fontSize: 15, fontWeight: "800" },
-  emptyText: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: "center" }
+  locationName: { color: colors.ink, fontSize: 13, fontWeight: "800" },
+  address: { color: colors.muted, fontSize: 10 },
+  priceBlock: { alignItems: "flex-end" },
+  price: { color: colors.ink, fontSize: 16, fontWeight: "900" },
+  perHour: { color: colors.muted, fontSize: 9, marginTop: 2 },
+  cardDivider: { height: 1, backgroundColor: "#303030", marginVertical: 11 },
+  chooseButton: { minHeight: 43, borderRadius: 13, backgroundColor: colors.primary, paddingHorizontal: 13, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  chooseText: { color: "#101010", fontSize: 12, fontWeight: "900" },
+  gestureHint: { color: colors.muted, fontSize: 10, textAlign: "center", paddingTop: 10 },
+  emptyState: { marginHorizontal: 20, padding: 18, borderRadius: 16, backgroundColor: "#1b1b1b", alignItems: "center", gap: 8 },
+  emptyTitle: { color: colors.ink, fontSize: 14, fontWeight: "800" },
+  emptyText: { color: colors.muted, fontSize: 11, textAlign: "center", lineHeight: 16 },
+  emptyAction: { color: colors.primary, fontSize: 12, fontWeight: "800", padding: 5 }
 });
