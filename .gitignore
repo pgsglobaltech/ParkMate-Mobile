@@ -1,0 +1,12 @@
+.env
+**/.env
+!**/.env.example
+.idea/
+.vscode/
+target/
+node_modules/
+.expo/
+.expo-export*/
+dist/
+build/
+*.log
